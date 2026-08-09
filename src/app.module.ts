@@ -4,6 +4,7 @@ import { PrismaModule } from './modules/prisma/prisma.module';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
 import { AuthModule } from './modules/auth/auth.module';
+import { RedisModule } from './modules/redis/redis.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { AuthModule } from './modules/auth/auth.module';
       validate,
     }),
     PrismaModule,
+    RedisModule,
     AuthModule,
   ],
   controllers: [],

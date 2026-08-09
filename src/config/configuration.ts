@@ -22,4 +22,14 @@ export default () => ({
     ttl: parseInt(process.env.THROTTLE_TTL ?? '60', 10),
     limit: parseInt(process.env.THROTTLE_LIMIT ?? '100', 10),
   },
+
+  redis: {
+    host: process.env.REDIS_HOST ?? 'localhost',
+    port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    password: process.env.REDIS_PASSWORD,
+    db: parseInt(process.env.REDIS_DB ?? '0', 10),
+    ttl: parseInt(process.env.REDIS_TTL ?? '3600', 10),
+    clusterMode: process.env.REDIS_CLUSTER_MODE === 'true',
+    sentinelMode: process.env.REDIS_SENTINEL_MODE === 'true',
+  },
 });
