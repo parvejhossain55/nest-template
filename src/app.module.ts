@@ -4,7 +4,8 @@ import { PrismaModule } from './modules/prisma/prisma.module';
 import configuration from './config/configuration';
 import { validate } from './config/validation';
 import { AuthModule } from './modules/auth/auth.module';
-import { RedisModule } from './modules/redis/redis.module';
+import { CacheModule } from './common/cache/cache.module';
+import { MailModule } from './common/mail/mail.module';
 
 @Module({
   imports: [
@@ -14,7 +15,8 @@ import { RedisModule } from './modules/redis/redis.module';
       validate,
     }),
     PrismaModule,
-    RedisModule,
+    CacheModule,
+    MailModule,
     AuthModule,
   ],
   controllers: [],

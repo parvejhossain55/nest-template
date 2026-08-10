@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { CacheModule } from '@nestjs/cache-manager';
+import { CacheModule as NestCacheModule } from '@nestjs/cache-manager';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Keyv } from 'keyv';
 import KeyvRedis from '@keyv/redis';
@@ -7,7 +7,7 @@ import KeyvRedis from '@keyv/redis';
 @Module({
   imports: [
     ConfigModule,
-    CacheModule.registerAsync({
+    NestCacheModule.registerAsync({
       isGlobal: true,
       useFactory: (configService: ConfigService) => {
         const host = configService.get<string>('redis.host');
@@ -32,4 +32,4 @@ import KeyvRedis from '@keyv/redis';
   ],
   exports: [CacheModule],
 })
-export class RedisModule {}
+export class CacheModule {}
