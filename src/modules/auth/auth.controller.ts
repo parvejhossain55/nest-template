@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Query,
   Req,
   Res,
   UnauthorizedException,
@@ -139,13 +140,22 @@ export class AuthController {
     }
   }
 
-  // POST, not GET: the verification token is a credential and must not be
-  // exposed in URLs (logs, history, Referer headers).
+  // POST is preferred for programmatic clients: the verification token is a
+  // credential and should not sit in URLs (logs, history, Referer headers).
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('verify-email')
   verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto.token);
+  }
+
+  // The emailed link is inherently a GET — links cannot POST. The token is
+  // single-use, high-entropy and short-lived, so accepting it here keeps the
+  // out-of-the-box flow working (click link -> verified).
+  @Public()
+  @Get('verify-email')
+  verifyEmailFromLink(@Query() query: VerifyEmailDto) {
+    return this.authService.verifyEmail(query.token);
   }
 
   @Public()

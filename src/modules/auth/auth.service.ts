@@ -176,6 +176,9 @@ export class AuthService {
 
     // Tampering — the JWT subject must match the stored row.
     if (payload.sub !== stored.userId) {
+      this.logger.warn(
+        `Refresh token subject mismatch for user ${stored.userId}; revoking all sessions`,
+      );
       await this.revokeUserSessions(stored.userId);
       throw new UnauthorizedException('Invalid refresh token');
     }
@@ -185,8 +188,12 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // A token that was already rotated is being replayed — kill the family.
+    // A token that was already rotated is being replayed — a definite theft
+    // signal; kill the whole family.
     if (stored.revokedAt) {
+      this.logger.warn(
+        `Refresh token reuse detected for user ${stored.userId}; revoking all sessions`,
+      );
       await this.revokeUserSessions(stored.userId);
       throw new UnauthorizedException('Invalid refresh token');
     }
@@ -206,7 +213,9 @@ export class AuthService {
         });
 
         if (claimed.count !== 1) {
-          // The same token was presented concurrently — treat it as replay.
+          // Another request already consumed this token — a concurrent refresh
+          // or a client retry. Rotation already makes it single-use, so just
+          // reject; revoking the whole family here would punish retries.
           throw new RefreshRotationConflict();
         }
 
@@ -224,11 +233,9 @@ export class AuthService {
         return tokens;
       });
     } catch (error) {
-      // Revoke the whole family on replay. Done outside the transaction so the
-      // revocation is not rolled back with the failed claim. Genuine failures
-      // (e.g. DB errors) propagate as-is instead of masquerading as a 401.
+      // Genuine failures (e.g. DB errors) propagate as-is instead of
+      // masquerading as a 401. Replay/conflict becomes a plain 401.
       if (error instanceof RefreshRotationConflict) {
-        await this.revokeUserSessions(stored.userId);
         throw new UnauthorizedException('Invalid refresh token');
       }
       throw error;
