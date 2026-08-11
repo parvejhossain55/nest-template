@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../../core/decorators/public.decorator';
 import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
@@ -32,6 +33,12 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  // Credential endpoints get a tighter budget than the global default.
+  private static readonly AUTH_THROTTLE = {
+    default: { limit: 20, ttl: 60_000 },
+  } as const;
+
+  @Throttle(AuthController.AUTH_THROTTLE)
   @Public()
   @Post('register')
   async register(
@@ -50,6 +57,7 @@ export class AuthController {
     return { user, accessToken };
   }
 
+  @Throttle(AuthController.AUTH_THROTTLE)
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('login')
@@ -94,6 +102,7 @@ export class AuthController {
     return this.authService.getMe(user.id);
   }
 
+  @Throttle(AuthController.AUTH_THROTTLE)
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
