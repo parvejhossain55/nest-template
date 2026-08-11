@@ -1,11 +1,19 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  INestApplication,
+  ValidationPipe,
+  VersioningType,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { App } from 'supertest/types';
 import request from 'supertest';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from '../src/database/prisma/prisma.service';
+import { MailService } from '../src/shared/mail/mail.service';
 
-describe('Auth & Users (e2e)', () => {
+const API = '/api/v1/auth';
+
+describe('Auth (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
 
@@ -15,16 +23,25 @@ describe('Auth & Users (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      // No SMTP in tests — assert on DB state instead.
+      .overrideProvider(MailService)
+      .useValue({ sendWelcomeEmail: jest.fn().mockResolvedValue(undefined) })
+      .compile();
 
     app = moduleFixture.createNestApplication();
+    // Mirror src/main.ts so tests exercise the real routing + middleware.
+    app.use(cookieParser());
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
         transform: true,
         forbidNonWhitelisted: true,
+        transformOptions: { enableImplicitConversion: true },
       }),
     );
+    app.setGlobalPrefix('api');
+    app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
     await app.init();
 
     prisma = app.get(PrismaService);
@@ -35,89 +52,152 @@ describe('Auth & Users (e2e)', () => {
     await app.close();
   });
 
-  it('POST /auth/register creates a user and returns tokens', async () => {
-    const res = await request(app.getHttpServer())
-      .post('/auth/register')
-      .send({ email, password, name: 'E2E User' })
-      .expect(201);
+  /** Shape of the JSON bodies the auth endpoints return. */
+  type AuthBody = {
+    user?: { email?: string; password?: string };
+    email?: string; // GET /me returns the user object flat
+    accessToken?: string;
+    refreshToken?: string;
+    message?: string;
+  };
 
-    expect(res.body.user.email).toBe(email);
-    expect(res.body.user.password).toBeUndefined();
-    expect(res.body.accessToken).toBeDefined();
-    expect(res.body.refreshToken).toBeDefined();
+  /** Casts a supertest body (typed as `any`) to the known response shape. */
+  const json = (res: request.Response): AuthBody => res.body as AuthBody;
+
+  /** Returns the full `refresh_token=...` cookie from a response. */
+  const refreshCookie = (res: request.Response): string => {
+    const setCookie = res.headers['set-cookie'];
+    const cookies = (
+      Array.isArray(setCookie) ? setCookie : [setCookie]
+    ) as string[];
+    const cookie = cookies.find((c) => c.startsWith('refresh_token='));
+    if (!cookie) throw new Error('refresh_token cookie was not set');
+    return cookie.split(';')[0];
+  };
+
+  const register = () =>
+    request(app.getHttpServer())
+      .post(`${API}/register`)
+      .send({ email, password, name: 'E2E User' });
+
+  const login = (overrides: Record<string, unknown> = {}) =>
+    request(app.getHttpServer())
+      .post(`${API}/login`)
+      .send({ email, password, ...overrides });
+
+  it('POST /register creates a user, returns an access token, sets refresh cookie', async () => {
+    const res = await register().expect(201);
+    const body = json(res);
+
+    expect(body.user?.email).toBe(email);
+    expect(body.user?.password).toBeUndefined();
+    expect(body.accessToken).toBeDefined();
+    // The refresh token lives only in the httpOnly cookie, never in the body.
+    expect(body.refreshToken).toBeUndefined();
+    expect(refreshCookie(res)).toBeDefined();
   });
 
-  it('POST /auth/register rejects duplicate emails with 409', async () => {
-    await request(app.getHttpServer())
-      .post('/auth/register')
-      .send({ email, password })
-      .expect(409);
+  it('POST /register rejects duplicate emails with 409', async () => {
+    await register().expect(409);
   });
 
-  it('GET /auth/me rejects requests without a token', async () => {
-    await request(app.getHttpServer()).get('/auth/me').expect(401);
+  it('GET /me rejects requests without a token', async () => {
+    await request(app.getHttpServer()).get(`${API}/me`).expect(401);
   });
 
-  it('POST /auth/login + GET /auth/me round-trip', async () => {
-    const login = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email, password })
-      .expect(201);
+  it('POST /login + GET /me round-trip', async () => {
+    const res = await login().expect(200);
 
     const me = await request(app.getHttpServer())
-      .get('/auth/me')
-      .set('Authorization', `Bearer ${login.body.accessToken}`)
+      .get(`${API}/me`)
+      .set('Authorization', `Bearer ${json(res).accessToken}`)
       .expect(200);
 
-    expect(me.body.email).toBe(email);
+    expect(json(me).email).toBe(email);
   });
 
-  it('POST /auth/login rejects bad credentials with 401', async () => {
+  it('POST /login rejects bad credentials with 401', async () => {
+    await login({ password: 'wrong-password' }).expect(401);
+  });
+
+  it('POST /refresh rotates the refresh cookie; rotated-away tokens are single-use', async () => {
+    const first = await login().expect(200);
+    const firstCookie = refreshCookie(first);
+
+    const rotated = await request(app.getHttpServer())
+      .post(`${API}/refresh`)
+      .set('Cookie', firstCookie)
+      .expect(200);
+
+    expect(json(rotated).accessToken).toBeDefined();
+    expect(json(rotated).refreshToken).toBeUndefined();
+    expect(refreshCookie(rotated)).not.toBe(firstCookie);
+
+    // Reusing the rotated-away token is rejected (and revokes the family).
     await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email, password: 'wrong-password' })
+      .post(`${API}/refresh`)
+      .set('Cookie', firstCookie)
       .expect(401);
   });
 
-  it('POST /auth/refresh rotates the refresh token', async () => {
-    const login = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email, password })
-      .expect(201);
+  it('concurrent refresh with the same token issues exactly one new pair', async () => {
+    const res = await login().expect(200);
+    const cookie = refreshCookie(res);
 
-    const refresh = await request(app.getHttpServer())
-      .post('/auth/refresh')
-      .send({ refreshToken: login.body.refreshToken })
-      .expect(201);
+    const responses = await Promise.all([
+      request(app.getHttpServer()).post(`${API}/refresh`).set('Cookie', cookie),
+      request(app.getHttpServer()).post(`${API}/refresh`).set('Cookie', cookie),
+    ]);
 
-    expect(refresh.body.accessToken).toBeDefined();
-    expect(refresh.body.refreshToken).toBeDefined();
-    expect(refresh.body.refreshToken).not.toBe(login.body.refreshToken);
+    const statuses = responses.map((r) => r.status).sort((a, b) => a - b);
+    expect(statuses).toEqual([200, 401]);
+  });
 
-    // The old token is now single-use — reuse must fail.
+  it('POST /logout revokes the session even without a valid access token', async () => {
+    const res = await login().expect(200);
+    const cookie = refreshCookie(res);
+
+    // No Authorization header at all — logout must not need an unexpired token.
     await request(app.getHttpServer())
-      .post('/auth/refresh')
-      .send({ refreshToken: login.body.refreshToken })
+      .post(`${API}/logout`)
+      .set('Cookie', cookie)
+      .expect(200);
+
+    // The revoked session can no longer be used to refresh.
+    await request(app.getHttpServer())
+      .post(`${API}/refresh`)
+      .set('Cookie', cookie)
+      .expect(401);
+
+    // Logout without a cookie is idempotent.
+    await request(app.getHttpServer()).post(`${API}/logout`).expect(200);
+  });
+
+  it('POST /verify-email rejects invalid tokens', async () => {
+    await request(app.getHttpServer())
+      .post(`${API}/verify-email`)
+      .send({ token: 'not-a-real-token' })
       .expect(401);
   });
 
-  it('GET /users requires authentication and lists registered users', async () => {
-    await request(app.getHttpServer()).get('/users').expect(401);
+  it('GET /verify-email (the emailed link) rejects invalid tokens', async () => {
+    await request(app.getHttpServer())
+      .get(`${API}/verify-email`)
+      .query({ token: 'not-a-real-token' })
+      .expect(401);
+  });
 
-    const login = await request(app.getHttpServer())
-      .post('/auth/login')
-      .send({ email, password })
-      .expect(201);
-
-    const users = await request(app.getHttpServer())
-      .get('/users')
-      .set('Authorization', `Bearer ${login.body.accessToken}`)
+  it('POST /resend-verification never reveals whether an email exists', async () => {
+    const registered = await request(app.getHttpServer())
+      .post(`${API}/resend-verification`)
+      .send({ email })
       .expect(200);
+    expect(json(registered).message).toBeDefined();
 
-    expect(users.body).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ email }),
-      ]),
-    );
+    const unknown = await request(app.getHttpServer())
+      .post(`${API}/resend-verification`)
+      .send({ email: 'nobody@example.com' })
+      .expect(200);
+    expect(json(unknown).message).toBe(json(registered).message);
   });
 });
