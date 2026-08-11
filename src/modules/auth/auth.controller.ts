@@ -17,8 +17,7 @@ import { Public } from '../../core/decorators/public.decorator';
 import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
-import { LogoutDto, VerifyEmailDto } from './dto/extra-auth.dto';
+import { VerifyEmailDto } from './dto/extra-auth.dto';
 import { AuthService } from './auth.service';
 import {
   REFRESH_TOKEN_COOKIE,
@@ -77,18 +76,22 @@ export class AuthController {
     return { user, accessToken };
   }
 
+  // Public on purpose: logout must work even when the access token has
+  // expired, so a user can always clear their session cookie.
+  @Public()
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(
     @Req() req: Request,
-    @Body() dto: LogoutDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = this.extractRefreshToken(req, dto.refreshToken);
+    const refreshToken = (req.cookies as Record<string, string> |
+      undefined)?.[REFRESH_TOKEN_COOKIE];
     if (refreshToken) {
       await this.authService.logout(refreshToken);
     }
 
+    // Idempotent: clearing a cookie that is already gone is still a success.
     res.clearCookie(
       REFRESH_TOKEN_COOKIE,
       clearRefreshCookieOptions(this.configService),
@@ -108,10 +111,9 @@ export class AuthController {
   @Post('refresh')
   async refresh(
     @Req() req: Request,
-    @Body() dto: RefreshTokenDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const refreshToken = this.extractRefreshToken(req, dto.refreshToken);
+    const refreshToken = this.extractRefreshToken(req);
 
     try {
       const {
@@ -145,12 +147,13 @@ export class AuthController {
   }
 
   /**
-   * Prefer the httpOnly cookie; fall back to the request body for backwards
-   * compatibility with clients that still send the token explicitly.
+   * The refresh token is only ever read from the httpOnly cookie. Accepting it
+   * from the request body or the URL would let page JavaScript exfiltrate it
+   * (XSS), defeating the cookie's whole purpose.
    */
-  private extractRefreshToken(req: Request, bodyToken?: string): string {
-    const cookies = req.cookies as Record<string, string> | undefined;
-    const refreshToken = cookies?.[REFRESH_TOKEN_COOKIE] ?? bodyToken;
+  private extractRefreshToken(req: Request): string {
+    const refreshToken = (req.cookies as Record<string, string> |
+      undefined)?.[REFRESH_TOKEN_COOKIE];
     if (!refreshToken) {
       throw new UnauthorizedException('Refresh token missing');
     }

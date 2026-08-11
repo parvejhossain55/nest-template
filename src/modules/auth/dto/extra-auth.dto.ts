@@ -19,12 +19,6 @@ export class ResetPasswordDto {
   newPassword: string;
 }
 
-export class LogoutDto {
-  @IsOptional()
-  @IsString()
-  refreshToken?: string;
-}
-
 export class Enable2faDto {
   @IsString()
   code: string;
