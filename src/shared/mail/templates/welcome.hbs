@@ -1,2 +1,6 @@
 <h1>Welcome, {{name}}!</h1>
 <p>Thanks for signing up.</p>
+{{#if verificationUrl}}
+  <p>Please confirm your email address by clicking the link below (valid for 24 hours):</p>
+  <p><a href="{{verificationUrl}}">Verify my email</a></p>
+{{/if}}

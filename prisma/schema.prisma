@@ -22,10 +22,11 @@ model User {
   password     String
   name         String?
   role         Role     @default(USER)
-  avatar       String?
-  isActive     Boolean  @default(true)
-  refreshToken String?
-  createdAt    DateTime @default(now())
+  avatar         String?
+  isActive       Boolean  @default(true)
+  emailVerifiedAt DateTime?
+  refreshToken   String?
+  createdAt      DateTime @default(now())
   updatedAt    DateTime @updatedAt
   deletedAt    DateTime?
 }
