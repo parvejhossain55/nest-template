@@ -17,9 +17,9 @@ enum Role {
 
 enum UserStatus {
   ACTIVE
-  SUSPENDED // temporarily restricted, can be restored
-  BANNED // permanent, requires appeal to lift
-  DEACTIVATED // user-initiated (e.g. account deletion request)
+  SUSPENDED     // temporarily restricted, can be restored
+  BANNED        // permanent, requires appeal to lift
+  DEACTIVATED   // user-initiated (e.g. account deletion request)
 }
 
 enum TokenType {
@@ -45,8 +45,7 @@ enum OAuthProvider {
 model User {
   id                   String     @id @default(uuid())
 
-  firstName            String?    @map("first_name")
-  lastName             String?    @map("last_name")
+  name                 String?    @map("first_name")
   avatarUrl            String?    @map("avatar_url")
 
   email                String     @unique
@@ -67,7 +66,6 @@ model User {
   verificationTokens   VerificationToken[]
   twoFactorAuth        TwoFactorAuth?
   oauthAccounts        OAuthAccount[]
-  trustedDevices       TrustedDevice[]
 
   @@index([role, status])
   @@map("users")
@@ -82,8 +80,8 @@ model RefreshToken {
   userId     String    @map("user_id")
   tokenHash  String    @unique @map("token_hash") // sha256(token) — deterministic for lookup & reuse detection
   expiresAt  DateTime  @map("expires_at")
-  revokedAt  DateTime? @map("revoked_at") // set on rotation / logout
-  lastUsedAt DateTime? @map("last_used_at") // last rotation time, aids theft detection
+  revokedAt  DateTime? @map("revoked_at")         // set on rotation / logout
+  lastUsedAt DateTime? @map("last_used_at")       // last rotation time, aids theft detection
   userAgent  String?   @map("user_agent")
   ipAddress  String?   @map("ip_address")
   createdAt  DateTime  @default(now()) @map("created_at")
@@ -155,23 +153,4 @@ model OAuthAccount {
   @@unique([provider, providerUserId])
   @@index([userId])
   @@map("oauth_accounts")
-}
-
-// ------------------------------------------------------------
-// TRUSTED DEVICES
-// ------------------------------------------------------------
-
-model TrustedDevice {
-  id                 String    @id @default(uuid())
-  userId             String    @map("user_id")
-  deviceFingerprint  String    @map("device_fingerprint")
-  deviceName         String?   @map("device_name")
-  expiresAt          DateTime? @map("expires_at") // null = trusted until revoked
-  lastUsedAt         DateTime? @map("last_used_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
-
-  user               User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, deviceFingerprint])
-  @@map("trusted_devices")
 }

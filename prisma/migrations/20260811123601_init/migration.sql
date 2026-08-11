@@ -16,7 +16,7 @@ CREATE TYPE "OAuthProvider" AS ENUM ('GOOGLE', 'FACEBOOK');
 -- CreateTable
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
-    "name" TEXT,
+    "first_name" TEXT,
     "avatar_url" TEXT,
     "email" TEXT NOT NULL,
     "password_hash" TEXT,
@@ -88,19 +88,6 @@ CREATE TABLE "oauth_accounts" (
     CONSTRAINT "oauth_accounts_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "trusted_devices" (
-    "id" TEXT NOT NULL,
-    "user_id" TEXT NOT NULL,
-    "device_fingerprint" TEXT NOT NULL,
-    "device_name" TEXT,
-    "expires_at" TIMESTAMP(3),
-    "last_used_at" TIMESTAMP(3),
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "trusted_devices_pkey" PRIMARY KEY ("id")
-);
-
 -- CreateIndex
 CREATE UNIQUE INDEX "users_email_key" ON "users"("email");
 
@@ -128,9 +115,6 @@ CREATE INDEX "oauth_accounts_user_id_idx" ON "oauth_accounts"("user_id");
 -- CreateIndex
 CREATE UNIQUE INDEX "oauth_accounts_provider_provider_user_id_key" ON "oauth_accounts"("provider", "provider_user_id");
 
--- CreateIndex
-CREATE UNIQUE INDEX "trusted_devices_user_id_device_fingerprint_key" ON "trusted_devices"("user_id", "device_fingerprint");
-
 -- AddForeignKey
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
@@ -142,6 +126,3 @@ ALTER TABLE "two_factor_auth" ADD CONSTRAINT "two_factor_auth_user_id_fkey" FORE
 
 -- AddForeignKey
 ALTER TABLE "oauth_accounts" ADD CONSTRAINT "oauth_accounts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "trusted_devices" ADD CONSTRAINT "trusted_devices_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;

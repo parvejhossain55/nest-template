@@ -6,9 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
-import { Role, User } from '@prisma/client';
+import { Prisma, Role, TokenType, User, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { MailService } from 'src/shared/mail/mail.service';
 import { LoginDto } from './dto/login.dto';
@@ -16,15 +16,10 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.types';
 
 const BCRYPT_SALT_ROUNDS = 10;
-const EMAIL_VERIFICATION_TTL = '24h';
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex strings
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
-
-interface EmailVerificationPayload {
-  sub: string;
-  email: string;
-  type: 'email-verification';
-}
 
 @Injectable()
 export class AuthService {
@@ -47,16 +42,28 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, BCRYPT_SALT_ROUNDS);
 
-    const user = await this.prisma.user.create({
-      data: { email, password: hashedPassword, name: dto.name },
-    });
+    let user: User;
+    try {
+      user = await this.prisma.user.create({
+        data: { email, passwordHash: hashedPassword, name: dto.name ?? null },
+      });
+    } catch (error) {
+      // The unique-email race can slip past the check above; map it to 409.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Email is already registered');
+      }
+      throw error;
+    }
 
     // Best-effort welcome email — never block signup if the mail service fails.
     try {
       await this.mailService.sendWelcomeEmail(
         user.email,
         user.name ?? 'there',
-        await this.buildVerificationUrl(user),
+        await this.buildEmailVerificationUrl(user),
       );
     } catch (error) {
       this.logger.warn(
@@ -64,10 +71,10 @@ export class AuthService {
       );
     }
 
-    const tokens = await this.generateTokens(user);
-    await this.storeRefreshToken(user.id, tokens.refreshToken);
+    const { expiresAt, accessToken, refreshToken } = await this.generateTokens(user);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
 
-    return { user: this.sanitizeUser(user), ...tokens };
+    return { user: this.sanitizeUser(user), accessToken };
   }
 
   async login(dto: LoginDto) {
@@ -78,19 +85,39 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const passwordMatches = await bcrypt.compare(dto.password, user.password);
+    // OAuth-only accounts have no password hash and cannot sign in this way.
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      dto.password,
+      user.passwordHash,
+    );
     if (!passwordMatches) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is disabled');
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException('Account is not active');
     }
 
-    const tokens = await this.generateTokens(user);
-    await this.storeRefreshToken(user.id, tokens.refreshToken);
+    // Best-effort: record the login time, never block sign-in on failure.
+    await this.prisma.user
+      .update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      })
+      .catch((error: Error) =>
+        this.logger.warn(
+          `Failed to update lastLoginAt for ${user.email}: ${error.message}`,
+        ),
+      );
 
-    return { user: this.sanitizeUser(user), ...tokens };
+    const { expiresAt, accessToken, refreshToken } = await this.generateTokens(user);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
+
+    return { user: this.sanitizeUser(user), accessToken };
   }
 
   async refresh(refreshToken: string) {
@@ -103,93 +130,84 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.tokenDigest(refreshToken) },
+      include: { user: true },
     });
-    if (!user || user.deletedAt || !user.isActive || !user.refreshToken) {
+
+    if (
+      !stored ||
+      stored.revokedAt ||
+      stored.expiresAt < new Date() ||
+      stored.user.deletedAt ||
+      stored.user.status !== UserStatus.ACTIVE
+    ) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    const storedMatches = await this.compareRefreshToken(
-      refreshToken,
-      user.refreshToken,
-    );
-    if (!storedMatches) {
-      // Token reuse or tampering — revoke the session so it cannot be replayed.
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { refreshToken: null },
+    // Token reuse / tampering — the JWT subject must match the stored row.
+    if (payload.sub !== stored.userId) {
+      await this.prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
       });
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Rotation: each refresh issues a brand-new pair and invalidates the old one.
-    const tokens = await this.generateTokens(user);
-    await this.storeRefreshToken(user.id, tokens.refreshToken);
+    // Rotation: invalidate the old token and issue a brand-new pair.
+    await this.prisma.refreshToken.update({
+      where: { id: stored.id },
+      data: { revokedAt: new Date(), lastUsedAt: new Date() },
+    });
+
+    const { expiresAt, ...tokens } = await this.generateTokens(stored.user);
+    await this.storeRefreshToken(stored.userId, tokens.refreshToken, expiresAt);
 
     return tokens;
   }
 
   async logout(refreshToken: string) {
-    // Idempotent: clearing a session that no longer exists is still a success.
-    try {
-      const payload = await this.jwtService.verifyAsync<JwtPayload>(
-        refreshToken,
-        { secret: this.configService.get<string>('jwt.refreshSecret') },
-      );
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: payload.sub },
-      });
-
-      if (user?.refreshToken) {
-        const matches = await this.compareRefreshToken(
-          refreshToken,
-          user.refreshToken,
-        );
-        if (matches) {
-          await this.prisma.user.update({
-            where: { id: user.id },
-            data: { refreshToken: null },
-          });
-        }
-      }
-    } catch { } // Invalid/expired token — nothing to revoke from the client's perspective.
+    // Idempotent: revoking a session that no longer exists is still a success.
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash: this.tokenDigest(refreshToken), revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
 
     return { message: 'Logged out successfully' };
   }
 
   async verifyEmail(token: string) {
-    let payload: EmailVerificationPayload;
-    try {
-      payload = await this.jwtService.verifyAsync<EmailVerificationPayload>(
-        token,
-        {
-          secret: this.configService.get<string>('jwt.accessSecret'),
-        },
-      );
-    } catch {
+    const verificationToken = await this.prisma.verificationToken.findUnique({
+      where: { tokenHash: this.tokenDigest(token) },
+      include: { user: true },
+    });
+
+    if (
+      !verificationToken ||
+      verificationToken.type !== TokenType.EMAIL_VERIFY ||
+      verificationToken.usedAt ||
+      verificationToken.expiresAt < new Date() ||
+      verificationToken.user.deletedAt
+    ) {
       throw new UnauthorizedException('Invalid or expired verification token');
     }
 
-    // Only tokens explicitly minted for email verification are accepted.
-    if (payload.type !== 'email-verification') {
-      throw new UnauthorizedException('Invalid verification token');
-    }
+    const { user } = verificationToken;
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-    });
-    if (!user || user.deletedAt || payload.email !== user.email) {
-      throw new UnauthorizedException('Invalid verification token');
-    }
-
-    if (!user.emailVerifiedAt) {
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { emailVerifiedAt: new Date() },
-      });
-    }
+    await this.prisma.$transaction([
+      this.prisma.verificationToken.update({
+        where: { id: verificationToken.id },
+        data: { usedAt: new Date() },
+      }),
+      ...(user.emailVerifiedAt
+        ? []
+        : [
+            this.prisma.user.update({
+              where: { id: user.id },
+              data: { emailVerifiedAt: new Date() },
+            }),
+          ]),
+    ]);
 
     return { message: 'Email verified successfully' };
   }
@@ -222,50 +240,61 @@ export class AuthService {
       }),
     ]);
 
-    return { accessToken, refreshToken };
+    // Read the `exp` claim from the freshly-minted token so the stored row's
+    // expiry always matches the JWT lifetime.
+    const decoded = await this.jwtService.verifyAsync<
+      JwtPayload & { exp: number }
+    >(refreshToken, {
+      secret: this.configService.get<string>('jwt.refreshSecret'),
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      expiresAt: new Date(decoded.exp * 1000),
+    };
   }
 
-  private async buildVerificationUrl(user: { id: string; email: string }) {
+  private async buildEmailVerificationUrl(user: { id: string; email: string }) {
     const appUrl = this.configService.get<string>(
       'appUrl',
       'http://localhost:3000',
     );
-    const token = await this.jwtService.signAsync(
-      { sub: user.id, email: user.email, type: 'email-verification' },
-      {
-        secret: this.configService.get<string>('jwt.accessSecret'),
-        expiresIn: EMAIL_VERIFICATION_TTL as ExpiresIn,
+    const rawToken = randomBytes(TOKEN_BYTES).toString('hex');
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+
+    await this.prisma.verificationToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.tokenDigest(rawToken),
+        type: TokenType.EMAIL_VERIFY,
+        expiresAt,
       },
-    );
-    return `${appUrl}/auth/verify-email?token=${token}`;
+    });
+
+    return `${appUrl}/auth/verify-email?token=${rawToken}`;
+  }
+
+  private async storeRefreshToken(
+    userId: string,
+    refreshToken: string,
+    expiresAt: Date,
+  ) {
+    await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash: this.tokenDigest(refreshToken),
+        expiresAt,
+      },
+    });
   }
 
   /**
-   * Refresh tokens are JWTs longer than bcrypt's 72-byte input limit, which
-   * bcrypt silently truncates. Hashing the SHA-256 digest first keeps the full
-   * token entropy while still using bcrypt for the stored credential.
+   * Tokens are stored as a deterministic SHA-256 digest so they can be looked
+   * up via the unique index and token reuse is detected.
    */
   private tokenDigest(token: string): string {
     return createHash('sha256').update(token).digest('hex');
-  }
-
-  private async hashRefreshToken(token: string): Promise<string> {
-    return bcrypt.hash(this.tokenDigest(token), BCRYPT_SALT_ROUNDS);
-  }
-
-  private async compareRefreshToken(
-    token: string,
-    hashed: string,
-  ): Promise<boolean> {
-    return bcrypt.compare(this.tokenDigest(token), hashed);
-  }
-
-  private async storeRefreshToken(userId: string, refreshToken: string) {
-    const hashed = await this.hashRefreshToken(refreshToken);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { refreshToken: hashed },
-    });
   }
 
   private sanitizeUser(user: User) {
@@ -274,9 +303,11 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
-      avatar: user.avatar,
-      isActive: user.isActive,
+      status: user.status,
+      avatarUrl: user.avatarUrl,
       emailVerifiedAt: user.emailVerifiedAt,
+      isTwoFactorEnabled: user.isTwoFactorEnabled,
+      createdAt: user.createdAt,
     };
   }
 }
