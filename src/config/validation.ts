@@ -1,5 +1,14 @@
 import { plainToInstance } from 'class-transformer';
-import { IsEnum, IsNumber, IsString, Min, Max, validateSync, IsOptional, IsUrl } from 'class-validator';
+import {
+  IsEnum,
+  IsNumber,
+  IsString,
+  Min,
+  Max,
+  validateSync,
+  IsOptional,
+  IsUrl,
+} from 'class-validator';
 
 enum Environment {
   Development = 'development',
@@ -36,6 +45,10 @@ class EnvironmentVariables {
   @IsString()
   @IsOptional()
   CORS_ORIGIN: string = '*';
+
+  @IsString()
+  @IsOptional()
+  COOKIE_SECRET?: string;
 
   @IsNumber()
   @IsOptional()
@@ -78,7 +91,9 @@ export function validate(config: Record<string, unknown>) {
   const validatedConfig = plainToInstance(EnvironmentVariables, config, {
     enableImplicitConversion: true,
   });
-  const errors = validateSync(validatedConfig, { skipMissingProperties: false });
+  const errors = validateSync(validatedConfig, {
+    skipMissingProperties: false,
+  });
 
   if (errors.length > 0) {
     throw new Error(

@@ -19,9 +19,17 @@ async function bootstrap() {
   // Response compression
   app.use(compression());
 
+  const corsOrigin = configService.get<string>('cors.origin', '*');
+
   app.enableCors({
-    origin: configService.get<string>('cors.origin', '*'),
-    credential: true
+    // `origin: true` reflects the request origin, which the browser requires
+    // instead of `*` when credentials (cookies) are involved. In production,
+    // set CORS_ORIGIN to an explicit comma-separated allowlist.
+    origin:
+      corsOrigin === '*'
+        ? true
+        : corsOrigin.split(',').map((entry) => entry.trim()),
+    credentials: true,
   });
 
   app.useGlobalPipes(
@@ -37,7 +45,7 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
   app.enableVersioning({
     type: VersioningType.URI,
-    defaultVersion: '1'
+    defaultVersion: '1',
   });
 
   // Graceful shutdown
@@ -46,7 +54,10 @@ async function bootstrap() {
   const port = configService.get<number>('port', 3000);
   await app.listen(port);
 
-  Logger.log(`🚀 Application running on: http://localhost:${port}`, 'Bootstrap');
+  Logger.log(
+    `🚀 Application running on: http://localhost:${port}`,
+    'Bootstrap',
+  );
 }
 
 bootstrap();

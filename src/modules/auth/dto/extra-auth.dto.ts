@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class VerifyEmailDto {
   @IsString()
@@ -20,8 +20,9 @@ export class ResetPasswordDto {
 }
 
 export class LogoutDto {
+  @IsOptional()
   @IsString()
-  refreshToken: string;
+  refreshToken?: string;
 }
 
 export class Enable2faDto {

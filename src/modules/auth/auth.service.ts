@@ -71,10 +71,16 @@ export class AuthService {
       );
     }
 
-    const { expiresAt, accessToken, refreshToken } = await this.generateTokens(user);
+    const { expiresAt, accessToken, refreshToken } =
+      await this.generateTokens(user);
     await this.storeRefreshToken(user.id, refreshToken, expiresAt);
 
-    return { user: this.sanitizeUser(user), accessToken };
+    return {
+      user: this.sanitizeUser(user),
+      accessToken,
+      refreshToken,
+      expiresAt,
+    };
   }
 
   async login(dto: LoginDto) {
@@ -114,10 +120,16 @@ export class AuthService {
         ),
       );
 
-    const { expiresAt, accessToken, refreshToken } = await this.generateTokens(user);
+    const { expiresAt, accessToken, refreshToken } =
+      await this.generateTokens(user);
     await this.storeRefreshToken(user.id, refreshToken, expiresAt);
 
-    return { user: this.sanitizeUser(user), accessToken };
+    return {
+      user: this.sanitizeUser(user),
+      accessToken,
+      refreshToken,
+      expiresAt,
+    };
   }
 
   async refresh(refreshToken: string) {
@@ -163,7 +175,7 @@ export class AuthService {
     const { expiresAt, ...tokens } = await this.generateTokens(stored.user);
     await this.storeRefreshToken(stored.userId, tokens.refreshToken, expiresAt);
 
-    return tokens;
+    return { ...tokens, expiresAt };
   }
 
   async logout(refreshToken: string) {
