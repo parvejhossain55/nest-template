@@ -5,7 +5,6 @@ import {
   HttpCode,
   HttpStatus,
   Post,
-  Query,
   Req,
   Res,
   UnauthorizedException,
@@ -17,7 +16,10 @@ import { Public } from '../../core/decorators/public.decorator';
 import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { VerifyEmailDto } from './dto/extra-auth.dto';
+import {
+  ResendVerificationDto,
+  VerifyEmailDto,
+} from './dto/extra-auth.dto';
 import { AuthService } from './auth.service';
 import {
   REFRESH_TOKEN_COOKIE,
@@ -140,10 +142,20 @@ export class AuthController {
     }
   }
 
+  // POST, not GET: the verification token is a credential and must not be
+  // exposed in URLs (logs, history, Referer headers).
   @Public()
-  @Get('verify-email')
-  verifyEmail(@Query() query: VerifyEmailDto) {
-    return this.authService.verifyEmail(query.token);
+  @HttpCode(HttpStatus.OK)
+  @Post('verify-email')
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('resend-verification')
+  resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto.email);
   }
 
   /**

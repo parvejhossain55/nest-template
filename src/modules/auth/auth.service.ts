@@ -234,6 +234,38 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
+  /**
+   * Issues a fresh verification link. Returns a generic message whether or not
+   * the email exists so the endpoint can't be used to enumerate registrations.
+   */
+  async resendVerification(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+    });
+
+    if (!user || user.deletedAt || user.emailVerifiedAt) {
+      return {
+        message: 'If this email is registered and unverified, a new link has been sent.',
+      };
+    }
+
+    try {
+      await this.mailService.sendWelcomeEmail(
+        user.email,
+        user.name ?? 'there',
+        await this.buildEmailVerificationUrl(user),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Verification email to ${user.email} failed: ${(error as Error).message}`,
+      );
+    }
+
+    return {
+      message: 'If this email is registered and unverified, a new link has been sent.',
+    };
+  }
+
   async verifyEmail(token: string) {
     const verificationToken = await this.prisma.verificationToken.findUnique({
       where: { tokenHash: this.tokenDigest(token) },
