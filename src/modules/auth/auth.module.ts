@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategies';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RolesGuard } from './guards/roles.guard';
 
 @Module({
   imports: [
@@ -50,6 +51,9 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Protect every route by default; opt out per-route with @Public().
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    // Runs after the JWT guard so req.user is attached; only enforces when a
+    // route carries @Roles().
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
 export class AuthModule {}
