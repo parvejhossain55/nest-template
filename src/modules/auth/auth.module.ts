@@ -4,6 +4,7 @@ import { JwtModule, JwtSignOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { APP_GUARD } from '@nestjs/core';
 import { MailModule } from '../../shared/mail/mail.module';
+import { CacheModule } from '../../shared/cache/cache.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategies';
@@ -28,6 +29,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
       }),
     }),
     MailModule,
+    CacheModule,
   ],
   controllers: [AuthController],
   providers: [

@@ -178,6 +178,15 @@ export class AuthService {
     return { ...tokens, expiresAt };
   }
 
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return this.sanitizeUser(user);
+  }
+
   async logout(refreshToken: string) {
     // Idempotent: revoking a session that no longer exists is still a success.
     await this.prisma.refreshToken.updateMany({

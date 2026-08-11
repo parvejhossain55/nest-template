@@ -3,6 +3,7 @@ import { CacheModule as NestCacheModule } from '@nestjs/cache-manager';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Keyv } from 'keyv';
 import KeyvRedis from '@keyv/redis';
+import { CacheService } from './cache.service';
 
 @Module({
   imports: [
@@ -16,7 +17,9 @@ import KeyvRedis from '@keyv/redis';
         const db = configService.get<number>('redis.db');
         const ttl = (configService.get<number>('redis.ttl') ?? 0) * 1000;
 
-        const url = password ? `redis://:${password}@${host}:${port}/${db}` : `redis://${host}:${port}/${db}`;
+        const url = password
+          ? `redis://:${password}@${host}:${port}/${db}`
+          : `redis://${host}:${port}/${db}`;
 
         return {
           stores: [
@@ -30,6 +33,7 @@ import KeyvRedis from '@keyv/redis';
       inject: [ConfigService],
     }),
   ],
-  exports: [CacheModule],
+  providers: [CacheService],
+  exports: [CacheModule, CacheService],
 })
 export class CacheModule {}

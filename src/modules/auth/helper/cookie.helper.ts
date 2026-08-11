@@ -9,7 +9,7 @@ function baseCookieOptions(configService: ConfigService): CookieOptions {
     httpOnly: true,
     secure: configService.get<boolean>('cookie.secure', false),
     sameSite: 'lax',
-    path: '/auth',
+    path: '/',
   };
 }
 

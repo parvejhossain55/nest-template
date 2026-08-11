@@ -13,6 +13,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { Public } from '../../core/decorators/public.decorator';
+import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -86,6 +87,11 @@ export class AuthController {
     );
 
     return { message: 'Logged out successfully' };
+  }
+
+  @Get('me')
+  me(@CurrentUser() user: { id: string }) {
+    return this.authService.getMe(user.id);
   }
 
   @Public()
