@@ -21,6 +21,9 @@ const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex string
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
 
+/** Internal sentinel: the refresh-token claim lost to a concurrent rotation. */
+class RefreshRotationConflict extends Error {}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -149,33 +152,67 @@ export class AuthService {
 
     if (
       !stored ||
-      stored.revokedAt ||
-      stored.expiresAt < new Date() ||
       stored.user.deletedAt ||
       stored.user.status !== UserStatus.ACTIVE
     ) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Token reuse / tampering — the JWT subject must match the stored row.
+    // Tampering — the JWT subject must match the stored row.
     if (payload.sub !== stored.userId) {
-      await this.prisma.refreshToken.update({
-        where: { id: stored.id },
-        data: { revokedAt: new Date() },
-      });
+      await this.revokeUserSessions(stored.userId);
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Rotation: invalidate the old token and issue a brand-new pair.
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { revokedAt: new Date(), lastUsedAt: new Date() },
-    });
+    // Merely expired is normal lifecycle — no theft signal, just reject.
+    if (stored.expiresAt < new Date()) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
-    const { expiresAt, ...tokens } = await this.generateTokens(stored.user);
-    await this.storeRefreshToken(stored.userId, tokens.refreshToken, expiresAt);
+    // A token that was already rotated is being replayed — kill the family.
+    if (stored.revokedAt) {
+      await this.revokeUserSessions(stored.userId);
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
-    return { ...tokens, expiresAt };
+    try {
+      // Atomically claim the token and insert its successor in one transaction:
+      // exactly one concurrent request wins the rotation, and a failure
+      // mid-rotation rolls back instead of stranding the user.
+      return await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.refreshToken.updateMany({
+          where: {
+            tokenHash: this.tokenDigest(refreshToken),
+            revokedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: { revokedAt: new Date(), lastUsedAt: new Date() },
+        });
+
+        if (claimed.count !== 1) {
+          // The same token was presented concurrently — treat it as replay.
+          throw new RefreshRotationConflict();
+        }
+
+        const tokens = await this.generateTokens(stored.user);
+        await tx.refreshToken.create({
+          data: {
+            userId: stored.userId,
+            tokenHash: this.tokenDigest(tokens.refreshToken),
+            expiresAt: tokens.expiresAt,
+          },
+        });
+
+        return tokens;
+      });
+    } catch (error) {
+      // Revoke the whole family on replay. Done outside the transaction so the
+      // revocation is not rolled back with the failed claim.
+      if (error instanceof RefreshRotationConflict) {
+        await this.revokeUserSessions(stored.userId);
+      }
+      throw new UnauthorizedException('Invalid refresh token');
+    }
   }
 
   async getMe(userId: string) {
@@ -294,6 +331,18 @@ export class AuthService {
     });
 
     return `${appUrl}/auth/verify-email?token=${rawToken}`;
+  }
+
+  /**
+   * Revokes every live refresh session for a user — used when a rotated token
+   * is replayed (theft indicator) so a stolen token can't outlive its sibling
+   * sessions.
+   */
+  private async revokeUserSessions(userId: string) {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 
   private async storeRefreshToken(
