@@ -16,10 +16,7 @@ import { Public } from '../../core/decorators/public.decorator';
 import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import {
-  ResendVerificationDto,
-  VerifyEmailDto,
-} from './dto/extra-auth.dto';
+import { ResendVerificationDto, VerifyEmailDto } from './dto/extra-auth.dto';
 import { AuthService } from './auth.service';
 import {
   REFRESH_TOKEN_COOKIE,
@@ -43,11 +40,12 @@ export class AuthController {
   @Public()
   @Post('register')
   async register(
+    @Req() req: Request,
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { user, accessToken, refreshToken, expiresAt } =
-      await this.authService.register(dto);
+      await this.authService.register(dto, this.sessionMeta(req));
 
     res.cookie(
       REFRESH_TOKEN_COOKIE,
@@ -63,11 +61,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('login')
   async login(
+    @Req() req: Request,
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
     const { user, accessToken, refreshToken, expiresAt } =
-      await this.authService.login(dto);
+      await this.authService.login(dto, this.sessionMeta(req));
 
     res.cookie(
       REFRESH_TOKEN_COOKIE,
@@ -83,12 +82,10 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('logout')
-  async logout(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const refreshToken = (req.cookies as Record<string, string> |
-      undefined)?.[REFRESH_TOKEN_COOKIE];
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[
+      REFRESH_TOKEN_COOKIE
+    ];
     if (refreshToken) {
       await this.authService.logout(refreshToken);
     }
@@ -122,7 +119,7 @@ export class AuthController {
         accessToken,
         refreshToken: newRefreshToken,
         expiresAt,
-      } = await this.authService.refresh(refreshToken);
+      } = await this.authService.refresh(refreshToken, this.sessionMeta(req));
 
       res.cookie(
         REFRESH_TOKEN_COOKIE,
@@ -158,14 +155,23 @@ export class AuthController {
     return this.authService.resendVerification(dto.email);
   }
 
+  /** Non-identifying request context recorded against new refresh sessions. */
+  private sessionMeta(req: Request) {
+    return {
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.ip,
+    };
+  }
+
   /**
    * The refresh token is only ever read from the httpOnly cookie. Accepting it
    * from the request body or the URL would let page JavaScript exfiltrate it
    * (XSS), defeating the cookie's whole purpose.
    */
   private extractRefreshToken(req: Request): string {
-    const refreshToken = (req.cookies as Record<string, string> |
-      undefined)?.[REFRESH_TOKEN_COOKIE];
+    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[
+      REFRESH_TOKEN_COOKIE
+    ];
     if (!refreshToken) {
       throw new UnauthorizedException('Refresh token missing');
     }

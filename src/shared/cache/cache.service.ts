@@ -7,9 +7,7 @@ import type { Cache } from 'cache-manager';
 export class CacheService {
   private readonly logger = new Logger(CacheService.name);
 
-  constructor(
-    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
-  ) {}
+  constructor(@Inject(CACHE_MANAGER) private readonly cacheManager: Cache) {}
 
   /**
    * Reads a value from cache. Returns undefined on error instead of throwing,
@@ -64,7 +62,9 @@ export class CacheService {
       const redisClient = store?.client ?? store?.redis;
 
       if (!redisClient) {
-        this.logger.warn('delByPattern: could not find underlying redis client');
+        this.logger.warn(
+          'delByPattern: could not find underlying redis client',
+        );
         return;
       }
 
@@ -77,7 +77,9 @@ export class CacheService {
         await redisClient.del(keys);
       }
     } catch (err) {
-      this.logger.warn(`Cache delByPattern failed for "${pattern}": ${err.message}`);
+      this.logger.warn(
+        `Cache delByPattern failed for "${pattern}": ${err.message}`,
+      );
     }
   }
 

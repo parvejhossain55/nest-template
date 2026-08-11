@@ -21,6 +21,12 @@ const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex string
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
 
+/** Non-identifying context recorded against a refresh session for theft triage. */
+export interface SessionMetadata {
+  userAgent?: string;
+  ipAddress?: string;
+}
+
 /** Internal sentinel: the refresh-token claim lost to a concurrent rotation. */
 class RefreshRotationConflict extends Error {}
 
@@ -35,7 +41,7 @@ export class AuthService {
     private readonly mailService: MailService,
   ) {}
 
-  async register(dto: RegisterDto) {
+  async register(dto: RegisterDto, meta?: SessionMetadata) {
     const email = dto.email.toLowerCase().trim();
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
@@ -74,7 +80,7 @@ export class AuthService {
 
     const { expiresAt, accessToken, refreshToken } =
       await this.generateTokens(user);
-    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt, meta);
 
     return {
       user: this.sanitizeUser(user),
@@ -84,7 +90,7 @@ export class AuthService {
     };
   }
 
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, meta?: SessionMetadata) {
     const email = dto.email.toLowerCase().trim();
 
     const user = await this.prisma.user.findUnique({ where: { email } });
@@ -121,9 +127,21 @@ export class AuthService {
         ),
       );
 
+    // Opportunistic upkeep: purge sessions that expired over a month ago so the
+    // table doesn't grow unbounded. Recent history is kept for reuse detection.
+    await this.prisma.refreshToken
+      .deleteMany({
+        where: {
+          expiresAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        },
+      })
+      .catch((error: Error) =>
+        this.logger.warn(`Failed to purge expired sessions: ${error.message}`),
+      );
+
     const { expiresAt, accessToken, refreshToken } =
       await this.generateTokens(user);
-    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt, meta);
 
     return {
       user: this.sanitizeUser(user),
@@ -133,7 +151,7 @@ export class AuthService {
     };
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(refreshToken: string, meta?: SessionMetadata) {
     let payload: JwtPayload;
     try {
       payload = await this.jwtService.verifyAsync<JwtPayload>(refreshToken, {
@@ -198,6 +216,8 @@ export class AuthService {
             userId: stored.userId,
             tokenHash: this.tokenDigest(tokens.refreshToken),
             expiresAt: tokens.expiresAt,
+            userAgent: meta?.userAgent,
+            ipAddress: meta?.ipAddress,
           },
         });
 
@@ -245,7 +265,8 @@ export class AuthService {
 
     if (!user || user.deletedAt || user.emailVerifiedAt) {
       return {
-        message: 'If this email is registered and unverified, a new link has been sent.',
+        message:
+          'If this email is registered and unverified, a new link has been sent.',
       };
     }
 
@@ -259,7 +280,8 @@ export class AuthService {
       );
 
     return {
-      message: 'If this email is registered and unverified, a new link has been sent.',
+      message:
+        'If this email is registered and unverified, a new link has been sent.',
     };
   }
 
@@ -382,12 +404,15 @@ export class AuthService {
     userId: string,
     refreshToken: string,
     expiresAt: Date,
+    meta?: SessionMetadata,
   ) {
     await this.prisma.refreshToken.create({
       data: {
         userId,
         tokenHash: this.tokenDigest(refreshToken),
         expiresAt,
+        userAgent: meta?.userAgent,
+        ipAddress: meta?.ipAddress,
       },
     });
   }

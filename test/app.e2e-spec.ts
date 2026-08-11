@@ -52,11 +52,25 @@ describe('Auth (e2e)', () => {
     await app.close();
   });
 
+  /** Shape of the JSON bodies the auth endpoints return. */
+  type AuthBody = {
+    user?: { email?: string; password?: string };
+    email?: string; // GET /me returns the user object flat
+    accessToken?: string;
+    refreshToken?: string;
+    message?: string;
+  };
+
+  /** Casts a supertest body (typed as `any`) to the known response shape. */
+  const json = (res: request.Response): AuthBody => res.body as AuthBody;
+
   /** Returns the full `refresh_token=...` cookie from a response. */
   const refreshCookie = (res: request.Response): string => {
     const setCookie = res.headers['set-cookie'];
-    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-    const cookie = cookies.find((c) => c?.startsWith('refresh_token='));
+    const cookies = (
+      Array.isArray(setCookie) ? setCookie : [setCookie]
+    ) as string[];
+    const cookie = cookies.find((c) => c.startsWith('refresh_token='));
     if (!cookie) throw new Error('refresh_token cookie was not set');
     return cookie.split(';')[0];
   };
@@ -73,12 +87,13 @@ describe('Auth (e2e)', () => {
 
   it('POST /register creates a user, returns an access token, sets refresh cookie', async () => {
     const res = await register().expect(201);
+    const body = json(res);
 
-    expect(res.body.user.email).toBe(email);
-    expect(res.body.user.password).toBeUndefined();
-    expect(res.body.accessToken).toBeDefined();
+    expect(body.user?.email).toBe(email);
+    expect(body.user?.password).toBeUndefined();
+    expect(body.accessToken).toBeDefined();
     // The refresh token lives only in the httpOnly cookie, never in the body.
-    expect(res.body.refreshToken).toBeUndefined();
+    expect(body.refreshToken).toBeUndefined();
     expect(refreshCookie(res)).toBeDefined();
   });
 
@@ -95,10 +110,10 @@ describe('Auth (e2e)', () => {
 
     const me = await request(app.getHttpServer())
       .get(`${API}/me`)
-      .set('Authorization', `Bearer ${res.body.accessToken}`)
+      .set('Authorization', `Bearer ${json(res).accessToken}`)
       .expect(200);
 
-    expect(me.body.email).toBe(email);
+    expect(json(me).email).toBe(email);
   });
 
   it('POST /login rejects bad credentials with 401', async () => {
@@ -114,8 +129,8 @@ describe('Auth (e2e)', () => {
       .set('Cookie', firstCookie)
       .expect(200);
 
-    expect(rotated.body.accessToken).toBeDefined();
-    expect(rotated.body.refreshToken).toBeUndefined();
+    expect(json(rotated).accessToken).toBeDefined();
+    expect(json(rotated).refreshToken).toBeUndefined();
     expect(refreshCookie(rotated)).not.toBe(firstCookie);
 
     // Reusing the rotated-away token is rejected (and revokes the family).
@@ -170,12 +185,12 @@ describe('Auth (e2e)', () => {
       .post(`${API}/resend-verification`)
       .send({ email })
       .expect(200);
-    expect(registered.body.message).toBeDefined();
+    expect(json(registered).message).toBeDefined();
 
     const unknown = await request(app.getHttpServer())
       .post(`${API}/resend-verification`)
       .send({ email: 'nobody@example.com' })
       .expect(200);
-    expect(unknown.body.message).toBe(registered.body.message);
+    expect(json(unknown).message).toBe(json(registered).message);
   });
 });
