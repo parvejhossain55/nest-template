@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { Prisma, Role, TokenType, User, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { MailService } from 'src/shared/mail/mail.service';
 import { LoginDto } from './dto/login.dto';
@@ -61,18 +61,16 @@ export class AuthService {
       throw error;
     }
 
-    // Best-effort welcome email — never block signup if the mail service fails.
-    try {
-      await this.mailService.sendWelcomeEmail(
-        user.email,
-        user.name ?? 'there',
-        await this.buildEmailVerificationUrl(user),
+    // Best-effort welcome email — never block signup on SMTP (which can hang
+    // for minutes when the provider is unreachable). Fire-and-forget.
+    const verificationUrl = await this.buildEmailVerificationUrl(user);
+    void this.mailService
+      .sendWelcomeEmail(user.email, user.name ?? 'there', verificationUrl)
+      .catch((error) =>
+        this.logger.warn(
+          `Welcome email to ${user.email} failed: ${(error as Error).message}`,
+        ),
       );
-    } catch (error) {
-      this.logger.warn(
-        `Welcome email to ${user.email} failed: ${(error as Error).message}`,
-      );
-    }
 
     const { expiresAt, accessToken, refreshToken } =
       await this.generateTokens(user);
@@ -207,11 +205,13 @@ export class AuthService {
       });
     } catch (error) {
       // Revoke the whole family on replay. Done outside the transaction so the
-      // revocation is not rolled back with the failed claim.
+      // revocation is not rolled back with the failed claim. Genuine failures
+      // (e.g. DB errors) propagate as-is instead of masquerading as a 401.
       if (error instanceof RefreshRotationConflict) {
         await this.revokeUserSessions(stored.userId);
+        throw new UnauthorizedException('Invalid refresh token');
       }
-      throw new UnauthorizedException('Invalid refresh token');
+      throw error;
     }
   }
 
@@ -249,17 +249,14 @@ export class AuthService {
       };
     }
 
-    try {
-      await this.mailService.sendWelcomeEmail(
-        user.email,
-        user.name ?? 'there',
-        await this.buildEmailVerificationUrl(user),
+    const verificationUrl = await this.buildEmailVerificationUrl(user);
+    void this.mailService
+      .sendWelcomeEmail(user.email, user.name ?? 'there', verificationUrl)
+      .catch((error) =>
+        this.logger.warn(
+          `Verification email to ${user.email} failed: ${(error as Error).message}`,
+        ),
       );
-    } catch (error) {
-      this.logger.warn(
-        `Verification email to ${user.email} failed: ${(error as Error).message}`,
-      );
-    }
 
     return {
       message: 'If this email is registered and unverified, a new link has been sent.',
@@ -307,10 +304,14 @@ export class AuthService {
     email: string;
     role: Role;
   }) {
-    const payload: JwtPayload = {
+    // `jti` makes every token unique even when two tokens are signed within the
+    // same second (JWT `iat` has 1s resolution and the payload is identical), so
+    // the unique token_hash index can never see a collision.
+    const payload: JwtPayload & { jti: string } = {
       sub: user.id,
       email: user.email,
       role: user.role,
+      jti: randomUUID(),
     };
 
     const [accessToken, refreshToken] = await Promise.all([
