@@ -14,6 +14,12 @@ export default () => ({
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN ?? '7d',
   },
 
+  cookie: {
+    secret: process.env.COOKIE_SECRET,
+    // Only send the refresh cookie over HTTPS in production.
+    secure: process.env.NODE_ENV === 'production',
+  },
+
   cors: {
     origin: process.env.CORS_ORIGIN ?? '*',
   },

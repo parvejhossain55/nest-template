@@ -1,8 +1,13 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class VerifyEmailDto {
   @IsString()
   token: string;
+}
+
+export class ResendVerificationDto {
+  @IsEmail()
+  email: string;
 }
 
 export class ForgotPasswordDto {
@@ -16,12 +21,8 @@ export class ResetPasswordDto {
 
   @IsString()
   @MinLength(8)
+  @MaxLength(72)
   newPassword: string;
-}
-
-export class LogoutDto {
-  @IsString()
-  refreshToken: string;
 }
 
 export class Enable2faDto {
