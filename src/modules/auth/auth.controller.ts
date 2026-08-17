@@ -17,7 +17,13 @@ import { Public } from '../../core/decorators/public.decorator';
 import { CurrentUser } from '../../core/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { ResendVerificationDto, VerifyEmailDto } from './dto/extra-auth.dto';
+import {
+  ForgotPasswordDto,
+  ResendVerificationDto,
+  ResetPasswordDto,
+  ChangePasswordDto,
+  VerifyEmailDto,
+} from './dto/extra-auth.dto';
 import { AuthService } from './auth.service';
 import {
   clearRefreshCookie,
@@ -129,11 +135,33 @@ export class AuthController {
     return this.authService.verifyEmail(dto.token);
   }
 
+  @Throttle(AuthController.AUTH_THROTTLE)
   @Public()
   @HttpCode(HttpStatus.OK)
-  @Post('resend-verification')
-  resendVerification(@Body() dto: ResendVerificationDto) {
-    return this.authService.resendVerification(dto.email);
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @Throttle(AuthController.AUTH_THROTTLE)
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('change-password')
+  changePassword(
+    @CurrentUser() user: { id: string },
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(
+      user.id,
+      dto.oldPassword,
+      dto.newPassword,
+    );
   }
 
   /** Non-identifying request context recorded against new refresh sessions. */

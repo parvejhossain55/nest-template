@@ -25,15 +25,15 @@ export class ResetPasswordDto {
   newPassword: string;
 }
 
-export class Enable2faDto {
+export class ChangePasswordDto {
   @IsString()
-  code: string;
-}
-
-export class Verify2faDto {
-  @IsString()
-  twoFactorToken: string;
+  @MinLength(8)
+  @MaxLength(72)
+  oldPassword: string;
 
   @IsString()
-  code: string;
+  @MinLength(8)
+  @MaxLength(72)
+  newPassword: string;
 }
+
