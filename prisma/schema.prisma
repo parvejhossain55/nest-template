@@ -27,17 +27,6 @@ enum TokenType {
   PASSWORD_RESET
 }
 
-enum TwoFactorMethod {
-  TOTP
-  SMS
-  EMAIL
-}
-
-enum OAuthProvider {
-  GOOGLE
-  FACEBOOK
-}
-
 // ------------------------------------------------------------
 // CORE: USERS
 // ------------------------------------------------------------
@@ -49,11 +38,10 @@ model User {
   avatarUrl            String?    @map("avatar_url")
 
   email                String     @unique
-  passwordHash         String?    @map("password_hash") // null for OAuth-only accounts
+  passwordHash         String     @map("password_hash")
 
   role                 Role       @default(USER)
   status               UserStatus @default(ACTIVE)
-  isTwoFactorEnabled   Boolean    @default(false) @map("is_two_factor_enabled")
 
   emailVerifiedAt      DateTime?  @map("email_verified_at")
   lastLoginAt          DateTime?  @map("last_login_at")
@@ -64,8 +52,6 @@ model User {
   // Relations
   refreshTokens        RefreshToken[]
   verificationTokens   VerificationToken[]
-  twoFactorAuth        TwoFactorAuth?
-  oauthAccounts        OAuthAccount[]
 
   @@index([role, status])
   @@map("users")
@@ -112,45 +98,3 @@ model VerificationToken {
   @@map("verification_tokens")
 }
 
-// ------------------------------------------------------------
-// TWO-FACTOR AUTHENTICATION
-// ------------------------------------------------------------
-
-model TwoFactorAuth {
-  id          String          @id @default(uuid())
-  userId      String          @unique @map("user_id")
-  secretKey   String          @map("secret_key") // encrypted TOTP secret
-  method      TwoFactorMethod @default(TOTP)
-  backupCodes String[]        @map("backup_codes") // hashed backup codes
-
-  createdAt   DateTime        @default(now()) @map("created_at")
-
-  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("two_factor_auth")
-}
-
-// ------------------------------------------------------------
-// SOCIAL / OAUTH LOGIN
-// ------------------------------------------------------------
-
-model OAuthAccount {
-  id               String        @id @default(uuid())
-  userId           String        @map("user_id")
-  provider         OAuthProvider
-  providerUserId   String        @map("provider_user_id")
-
-  accessToken      String?       @map("access_token") // encrypted
-  refreshToken     String?       @map("refresh_token") // encrypted
-  tokenExpiresAt   DateTime?     @map("token_expires_at")
-
-  rawProfile       Json?         @map("raw_profile")
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @updatedAt @map("updated_at")
-
-  user             User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerUserId])
-  @@index([userId])
-  @@map("oauth_accounts")
-}

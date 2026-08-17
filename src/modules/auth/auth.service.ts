@@ -78,8 +78,7 @@ export class AuthService {
         ),
       );
 
-    const { expiresAt, accessToken, refreshToken } =
-      await this.generateTokens(user);
+    const { expiresAt, accessToken, refreshToken } = await this.generateTokens(user);
     await this.storeRefreshToken(user.id, refreshToken, expiresAt, meta);
 
     return {
@@ -261,41 +260,23 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
-  /**
-   * Issues a fresh verification link. Returns a generic message whether or not
-   * the email exists so the endpoint can't be used to enumerate registrations.
-   */
-  async resendVerification(email: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
-    });
-
-    if (!user || user.deletedAt || user.emailVerifiedAt) {
-      return {
-        message:
-          'If this email is registered and unverified, a new link has been sent.',
-      };
-    }
-
-    const verificationUrl = await this.buildEmailVerificationUrl(user);
-    void this.mailService
-      .sendWelcomeEmail(user.email, user.name ?? 'there', verificationUrl)
-      .catch((error) =>
-        this.logger.warn(
-          `Verification email to ${user.email} failed: ${(error as Error).message}`,
-        ),
-      );
-
-    return {
-      message:
-        'If this email is registered and unverified, a new link has been sent.',
-    };
-  }
-
   async verifyEmail(token: string) {
     const verificationToken = await this.prisma.verificationToken.findUnique({
       where: { tokenHash: this.tokenDigest(token) },
-      include: { user: true },
+      // include: { user: true },
+      select: {
+        id: true,
+        type: true,
+        usedAt: true,
+        expiresAt: true,
+        user: {
+          select: {
+            id: true,
+            emailVerifiedAt: true,
+            deletedAt: true
+          }
+        }
+      }
     });
 
     if (
@@ -432,6 +413,112 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
+  async forgotPassword(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+    });
+
+    // Return a generic message to prevent email enumeration
+    if (!user || user.deletedAt) {
+      return {
+        message: 'If this email is registered, a password reset link has been sent.',
+      };
+    }
+
+    const appUrl = this.configService.get<string>(
+      'appUrl',
+      'http://localhost:3000',
+    );
+    const rawToken = randomBytes(TOKEN_BYTES).toString('hex');
+    const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
+    const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+
+    await this.prisma.verificationToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.tokenDigest(rawToken),
+        type: TokenType.PASSWORD_RESET,
+        expiresAt,
+      },
+    });
+
+    const resetUrl = `${appUrl}/auth/reset-password?token=${rawToken}`;
+    void this.mailService
+      .sendPasswordResetEmail(user.email, user.name ?? 'there', resetUrl)
+      .catch((error) =>
+        this.logger.warn(
+          `Password reset email to ${user.email} failed: ${(error as Error).message}`,
+        ),
+      );
+
+    return {
+      message: 'If this email is registered, a password reset link has been sent.',
+    };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    const resetToken = await this.prisma.verificationToken.findUnique({
+      where: { tokenHash: this.tokenDigest(token) },
+      include: { user: true },
+    });
+
+    if (
+      !resetToken ||
+      resetToken.type !== TokenType.PASSWORD_RESET ||
+      resetToken.usedAt ||
+      resetToken.expiresAt < new Date() ||
+      resetToken.user.deletedAt
+    ) {
+      throw new UnauthorizedException('Invalid or expired password reset token');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+
+    await this.prisma.$transaction([
+      this.prisma.verificationToken.update({
+        where: { id: resetToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash: hashedPassword },
+      }),
+    ]);
+
+    // Revoke all existing sessions after password change for security
+    await this.revokeUserSessions(resetToken.userId);
+
+    return { message: 'Password has been reset successfully' };
+  }
+
+  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('Password is not set for this account');
+    }
+
+    const passwordMatches = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!passwordMatches) {
+      throw new UnauthorizedException('Invalid current password');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: hashedPassword },
+    });
+
+    // Revoke all other sessions for security
+    await this.revokeUserSessions(userId);
+
+    return { message: 'Password changed successfully' };
+  }
+
   private sanitizeUser(user: User) {
     return {
       id: user.id,
@@ -441,8 +528,8 @@ export class AuthService {
       status: user.status,
       avatarUrl: user.avatarUrl,
       emailVerifiedAt: user.emailVerifiedAt,
-      isTwoFactorEnabled: user.isTwoFactorEnabled,
       createdAt: user.createdAt,
     };
   }
 }
+

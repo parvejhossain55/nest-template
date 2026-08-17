@@ -27,4 +27,26 @@ export class MailService {
       throw error; // let caller decide: retry, queue, alert, etc.
     }
   }
+
+  async sendPasswordResetEmail(
+    to: string,
+    name: string,
+    resetUrl: string,
+  ): Promise<void> {
+    try {
+      await this.mailerService.sendMail({
+        to,
+        subject: 'Reset Password',
+        template: './password-reset', // resolves to templates/password-reset.hbs
+        context: { name, resetUrl },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send password reset email to ${to}`,
+        (error as Error).stack,
+      );
+      throw error;
+    }
+  }
 }
+
