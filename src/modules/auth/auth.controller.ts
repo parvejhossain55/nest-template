@@ -20,9 +20,9 @@ import { LoginDto } from './dto/login.dto';
 import { ResendVerificationDto, VerifyEmailDto } from './dto/extra-auth.dto';
 import { AuthService } from './auth.service';
 import {
-  REFRESH_TOKEN_COOKIE,
-  clearRefreshCookieOptions,
-  refreshCookieOptions,
+  clearRefreshCookie,
+  getRefreshToken,
+  setRefreshCookie,
 } from './helper/cookie.helper';
 
 @Controller('auth')
@@ -48,11 +48,7 @@ export class AuthController {
     const { user, accessToken, refreshToken, expiresAt } =
       await this.authService.register(dto, this.sessionMeta(req));
 
-    res.cookie(
-      REFRESH_TOKEN_COOKIE,
-      refreshToken,
-      refreshCookieOptions(this.configService, expiresAt),
-    );
+    setRefreshCookie(res, this.configService, refreshToken, expiresAt);
 
     return { user, accessToken };
   }
@@ -69,11 +65,7 @@ export class AuthController {
     const { user, accessToken, refreshToken, expiresAt } =
       await this.authService.login(dto, this.sessionMeta(req));
 
-    res.cookie(
-      REFRESH_TOKEN_COOKIE,
-      refreshToken,
-      refreshCookieOptions(this.configService, expiresAt),
-    );
+    setRefreshCookie(res, this.configService, refreshToken, expiresAt);
 
     return { user, accessToken };
   }
@@ -84,18 +76,13 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('logout')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[
-      REFRESH_TOKEN_COOKIE
-    ];
+    const refreshToken = getRefreshToken(req);
     if (refreshToken) {
       await this.authService.logout(refreshToken);
     }
 
     // Idempotent: clearing a cookie that is already gone is still a success.
-    res.clearCookie(
-      REFRESH_TOKEN_COOKIE,
-      clearRefreshCookieOptions(this.configService),
-    );
+    clearRefreshCookie(res, this.configService);
 
     return { message: 'Logged out successfully' };
   }
@@ -122,20 +109,13 @@ export class AuthController {
         expiresAt,
       } = await this.authService.refresh(refreshToken, this.sessionMeta(req));
 
-      res.cookie(
-        REFRESH_TOKEN_COOKIE,
-        newRefreshToken,
-        refreshCookieOptions(this.configService, expiresAt),
-      );
+      setRefreshCookie(res, this.configService, newRefreshToken, expiresAt);
 
       return { accessToken };
     } catch (error) {
       // A failed rotation leaves a dead cookie behind — clear it so the client
       // doesn't keep retrying an invalid session.
-      res.clearCookie(
-        REFRESH_TOKEN_COOKIE,
-        clearRefreshCookieOptions(this.configService),
-      );
+      clearRefreshCookie(res, this.configService);
       throw error;
     }
   }
@@ -147,15 +127,6 @@ export class AuthController {
   @Post('verify-email')
   verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto.token);
-  }
-
-  // The emailed link is inherently a GET — links cannot POST. The token is
-  // single-use, high-entropy and short-lived, so accepting it here keeps the
-  // out-of-the-box flow working (click link -> verified).
-  @Public()
-  @Get('verify-email')
-  verifyEmailFromLink(@Query() query: VerifyEmailDto) {
-    return this.authService.verifyEmail(query.token);
   }
 
   @Public()
@@ -179,9 +150,7 @@ export class AuthController {
    * (XSS), defeating the cookie's whole purpose.
    */
   private extractRefreshToken(req: Request): string {
-    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[
-      REFRESH_TOKEN_COOKIE
-    ];
+    const refreshToken = getRefreshToken(req);
     if (!refreshToken) {
       throw new UnauthorizedException('Refresh token missing');
     }

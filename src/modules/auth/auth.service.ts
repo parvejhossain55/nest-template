@@ -16,7 +16,7 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.types';
 
 const BCRYPT_SALT_ROUNDS = 10;
-const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex strings
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
