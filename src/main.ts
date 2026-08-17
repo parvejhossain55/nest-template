@@ -10,13 +10,8 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
 
-  // Security headers
   app.use(helmet());
-
-  // Cookie parser
   app.use(cookieParser(configService.get<string>('cookie.secret')));
-
-  // Response compression
   app.use(compression());
 
   const env = configService.get<string>('env', 'development');
@@ -51,14 +46,12 @@ async function bootstrap() {
     }),
   );
 
-  // Set API prefix + versioning
   app.setGlobalPrefix('api');
   app.enableVersioning({
     type: VersioningType.URI,
     defaultVersion: '1',
   });
 
-  // Graceful shutdown
   app.enableShutdownHooks();
 
   const port = configService.get<number>('port', 3000);
