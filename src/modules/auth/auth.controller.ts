@@ -151,6 +151,7 @@ export class AuthController {
     return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
+  @Throttle(AuthController.AUTH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @Post('change-password')
   changePassword(
