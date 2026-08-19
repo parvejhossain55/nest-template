@@ -21,6 +21,7 @@ const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex strings
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_SESSIONS_PER_USER = 10;
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
 
@@ -440,6 +441,32 @@ export class AuthService {
         ipAddress: meta?.ipAddress,
       },
     });
+
+    // Enforce per-user session limit: revoke the oldest sessions that push
+    // the count above MAX_SESSIONS_PER_USER.
+    const activeCount = await this.prisma.refreshToken.count({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+    });
+
+    if (activeCount > MAX_SESSIONS_PER_USER) {
+      const excess = activeCount - MAX_SESSIONS_PER_USER;
+      const oldestTokens = await this.prisma.refreshToken.findMany({
+        where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+        orderBy: { createdAt: 'asc' },
+        take: excess,
+        select: { id: true },
+      });
+
+      if (oldestTokens.length > 0) {
+        await this.prisma.refreshToken.updateMany({
+          where: { id: { in: oldestTokens.map((t) => t.id) } },
+          data: { revokedAt: new Date() },
+        });
+        this.logger.debug(
+          `Revoked ${oldestTokens.length} oldest session(s) for user ${userId} (limit: ${MAX_SESSIONS_PER_USER})`,
+        );
+      }
+    }
   }
 
   /**
