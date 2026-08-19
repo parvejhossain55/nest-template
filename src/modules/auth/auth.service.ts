@@ -19,6 +19,8 @@ import { JwtPayload } from './types/jwt-payload.types';
 const BCRYPT_SALT_ROUNDS = 10;
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex strings
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
 
@@ -93,6 +95,14 @@ export class AuthService {
 
   async login(dto: LoginDto, meta?: SessionMetadata) {
     const email = dto.email.toLowerCase().trim();
+    const lockoutKey = this.cacheService.buildKey('throttle:login', email);
+
+    // Check if the account is locked out from too many failed attempts.
+    const failedAttempts = (await this.cacheService.get<number>(lockoutKey)) ?? 0;
+    if (failedAttempts >= MAX_LOGIN_ATTEMPTS) {
+      // Use the same generic message to prevent account-lockout enumeration.
+      throw new UnauthorizedException('Invalid credentials');
+    }
 
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || user.deletedAt) {
@@ -109,7 +119,18 @@ export class AuthService {
       user.passwordHash,
     );
     if (!passwordMatches) {
+      // Track the failed attempt; auto-expires after the lockout window.
+      await this.cacheService.set(
+        lockoutKey,
+        failedAttempts + 1,
+        LOGIN_LOCKOUT_MS,
+      );
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Successful login — clear any failed attempt counter.
+    if (failedAttempts > 0) {
+      await this.cacheService.del(lockoutKey);
     }
 
     if (user.status !== UserStatus.ACTIVE) {
