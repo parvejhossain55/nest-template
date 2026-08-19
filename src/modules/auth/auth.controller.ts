@@ -151,17 +151,29 @@ export class AuthController {
     return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 
+  @Throttle(AuthController.AUTH_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @Post('change-password')
-  changePassword(
+  async changePassword(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
     @CurrentUser() user: { id: string },
     @Body() dto: ChangePasswordDto,
   ) {
-    return this.authService.changePassword(
-      user.id,
-      dto.oldPassword,
-      dto.newPassword,
-    );
+    const currentRefreshToken = getRefreshToken(req);
+    const { message, accessToken, refreshToken, expiresAt } =
+      await this.authService.changePassword(
+        user.id,
+        dto.oldPassword,
+        dto.newPassword,
+        currentRefreshToken,
+      );
+
+    // The old refresh token is revoked; issue a fresh cookie so the session
+    // stays alive without requiring re-login.
+    setRefreshCookie(res, this.configService, refreshToken, expiresAt);
+
+    return { message, accessToken };
   }
 
   /** Non-identifying request context recorded against new refresh sessions. */

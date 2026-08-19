@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { MailService } from 'src/shared/mail/mail.service';
+import { CacheService } from 'src/shared/cache/cache.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.types';
@@ -18,6 +19,9 @@ import { JwtPayload } from './types/jwt-payload.types';
 const BCRYPT_SALT_ROUNDS = 10;
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const TOKEN_BYTES = 32; // raw verification tokens are random 64-char hex strings
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_SESSIONS_PER_USER = 10;
 
 type ExpiresIn = JwtSignOptions['expiresIn'];
 
@@ -39,6 +43,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly cacheService: CacheService,
   ) {}
 
   async register(dto: RegisterDto, meta?: SessionMetadata) {
@@ -91,6 +96,14 @@ export class AuthService {
 
   async login(dto: LoginDto, meta?: SessionMetadata) {
     const email = dto.email.toLowerCase().trim();
+    const lockoutKey = this.cacheService.buildKey('throttle:login', email);
+
+    // Check if the account is locked out from too many failed attempts.
+    const failedAttempts = (await this.cacheService.get<number>(lockoutKey)) ?? 0;
+    if (failedAttempts >= MAX_LOGIN_ATTEMPTS) {
+      // Use the same generic message to prevent account-lockout enumeration.
+      throw new UnauthorizedException('Invalid credentials');
+    }
 
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || user.deletedAt) {
@@ -107,7 +120,18 @@ export class AuthService {
       user.passwordHash,
     );
     if (!passwordMatches) {
+      // Track the failed attempt; auto-expires after the lockout window.
+      await this.cacheService.set(
+        lockoutKey,
+        failedAttempts + 1,
+        LOGIN_LOCKOUT_MS,
+      );
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Successful login — clear any failed attempt counter.
+    if (failedAttempts > 0) {
+      await this.cacheService.del(lockoutKey);
     }
 
     if (user.status !== UserStatus.ACTIVE) {
@@ -381,9 +405,23 @@ export class AuthService {
    * is replayed (theft indicator) so a stolen token can't outlive its sibling
    * sessions.
    */
-  private async revokeUserSessions(userId: string) {
+  private async revokeUserSessions(
+    userId: string,
+    excludeTokenHash?: string,
+  ) {
+    const where: Prisma.RefreshTokenWhereInput = {
+      userId,
+      revokedAt: null,
+    };
+
+    // When a token hash is provided, exclude it from revocation so the
+    // caller's current session stays alive (e.g. after changePassword).
+    if (excludeTokenHash) {
+      where.tokenHash = { not: excludeTokenHash };
+    }
+
     await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
+      where,
       data: { revokedAt: new Date() },
     });
   }
@@ -403,6 +441,32 @@ export class AuthService {
         ipAddress: meta?.ipAddress,
       },
     });
+
+    // Enforce per-user session limit: revoke the oldest sessions that push
+    // the count above MAX_SESSIONS_PER_USER.
+    const activeCount = await this.prisma.refreshToken.count({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+    });
+
+    if (activeCount > MAX_SESSIONS_PER_USER) {
+      const excess = activeCount - MAX_SESSIONS_PER_USER;
+      const oldestTokens = await this.prisma.refreshToken.findMany({
+        where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+        orderBy: { createdAt: 'asc' },
+        take: excess,
+        select: { id: true },
+      });
+
+      if (oldestTokens.length > 0) {
+        await this.prisma.refreshToken.updateMany({
+          where: { id: { in: oldestTokens.map((t) => t.id) } },
+          data: { revokedAt: new Date() },
+        });
+        this.logger.debug(
+          `Revoked ${oldestTokens.length} oldest session(s) for user ${userId} (limit: ${MAX_SESSIONS_PER_USER})`,
+        );
+      }
+    }
   }
 
   /**
@@ -414,8 +478,21 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Per-email rate limit: max 3 reset requests per email per hour.
+    const throttleKey = this.cacheService.buildKey('throttle:pwd-reset', normalizedEmail);
+    const attempts = (await this.cacheService.get<number>(throttleKey)) ?? 0;
+    if (attempts >= 3) {
+      // Still return a generic message to prevent email enumeration.
+      return {
+        message: 'If this email is registered, a password reset link has been sent.',
+      };
+    }
+    await this.cacheService.set(throttleKey, attempts + 1, 60 * 60 * 1000); // 1 hour TTL
+
     const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+      where: { email: normalizedEmail },
     });
 
     // Return a generic message to prevent email enumeration
@@ -491,7 +568,12 @@ export class AuthService {
     return { message: 'Password has been reset successfully' };
   }
 
-  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+  async changePassword(
+    userId: string,
+    oldPassword: string,
+    newPassword: string,
+    currentRefreshToken?: string,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.deletedAt) {
       throw new UnauthorizedException('User not found');
@@ -513,10 +595,26 @@ export class AuthService {
       data: { passwordHash: hashedPassword },
     });
 
-    // Revoke all other sessions for security
-    await this.revokeUserSessions(userId);
+    // Revoke all sessions except the current one so the user stays logged in.
+    // A stolen session is still invalidated; only the caller's active session
+    // survives by receiving a fresh refresh token below.
+    const excludeHash = currentRefreshToken
+      ? this.tokenDigest(currentRefreshToken)
+      : undefined;
+    await this.revokeUserSessions(userId, excludeHash);
 
-    return { message: 'Password changed successfully' };
+    // Issue a new refresh token for the current session so the rotated-away
+    // old token can never be replayed.
+    const { expiresAt, accessToken, refreshToken } =
+      await this.generateTokens(user);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
+
+    return {
+      message: 'Password changed successfully',
+      accessToken,
+      refreshToken,
+      expiresAt,
+    };
   }
 
   private sanitizeUser(user: User) {
