@@ -85,6 +85,17 @@ describe('Auth (e2e)', () => {
       .post(`${API}/login`)
       .send({ email, password, ...overrides });
 
+  /** Directly verify the user's email via DB (bypasses the email flow). */
+  const verifyEmailDirectly = async (userEmail: string) => {
+    const user = await prisma.user.findUnique({ where: { email: userEmail } });
+    if (user && !user.emailVerifiedAt) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerifiedAt: new Date() },
+      });
+    }
+  };
+
   it('POST /register creates a user, returns an access token, sets refresh cookie', async () => {
     const res = await register().expect(201);
     const body = json(res);
@@ -95,6 +106,9 @@ describe('Auth (e2e)', () => {
     // The refresh token lives only in the httpOnly cookie, never in the body.
     expect(body.refreshToken).toBeUndefined();
     expect(refreshCookie(res)).toBeDefined();
+
+    // Verify the email so subsequent tests can access protected routes.
+    await verifyEmailDirectly(email);
   });
 
   it('POST /register rejects duplicate emails with 409', async () => {
@@ -103,6 +117,25 @@ describe('Auth (e2e)', () => {
 
   it('GET /me rejects requests without a token', async () => {
     await request(app.getHttpServer()).get(`${API}/me`).expect(401);
+  });
+
+  it('GET /me rejects unverified users', async () => {
+    // Register a new user with a unique email and do NOT verify.
+    const unverifiedEmail = `e2e-unverified-${Date.now()}@example.com`;
+    const res = await request(app.getHttpServer())
+      .post(`${API}/register`)
+      .send({ email: unverifiedEmail, password, name: 'Unverified' })
+      .expect(201);
+
+    const meRes = await request(app.getHttpServer())
+      .get(`${API}/me`)
+      .set('Authorization', `Bearer ${json(res).accessToken}`)
+      .expect(401);
+
+    expect(json(meRes).message).toContain('Email verification required');
+
+    // Cleanup.
+    await prisma.user.deleteMany({ where: { email: unverifiedEmail } });
   });
 
   it('POST /login + GET /me round-trip', async () => {

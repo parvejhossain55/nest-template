@@ -34,20 +34,39 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       id: string;
       email: string;
       role: string;
+      emailVerifiedAt: string | null;
     }>(cacheKey);
     if (cached) {
-      return cached;
+      this.ensureEmailVerified(cached.emailVerifiedAt);
+      return { id: cached.id, email: cached.email, role: cached.role };
     }
 
     const user = await this.prisma.user.findFirst({
       where: { id: payload.sub, deletedAt: null, status: UserStatus.ACTIVE },
-      select: { id: true, email: true, role: true },
+      select: { id: true, email: true, role: true, emailVerifiedAt: true },
     });
     if (!user) throw new UnauthorizedException();
 
     await this.cacheService.set(cacheKey, user, USER_CACHE_TTL_MS);
 
+    this.ensureEmailVerified(user.emailVerifiedAt);
+
     return { id: user.id, email: user.email, role: user.role };
+  }
+
+  /**
+   * Blocks access for users who haven't verified their email. Throws 403
+   * (Forbidden) rather than 401 so the client can distinguish "you need to
+   * verify your email" from "your token is invalid".
+   */
+  private ensureEmailVerified(
+    emailVerifiedAt: Date | string | null | undefined,
+  ): void {
+    if (!emailVerifiedAt) {
+      throw new UnauthorizedException(
+        'Email verification required. Please verify your email before accessing this resource.',
+      );
+    }
   }
 
   /**
