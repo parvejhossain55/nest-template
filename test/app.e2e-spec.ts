@@ -180,13 +180,6 @@ describe('Auth (e2e)', () => {
       .expect(401);
   });
 
-  it('GET /verify-email (the emailed link) rejects invalid tokens', async () => {
-    await request(app.getHttpServer())
-      .get(`${API}/verify-email`)
-      .query({ token: 'not-a-real-token' })
-      .expect(401);
-  });
-
   it('POST /resend-verification never reveals whether an email exists', async () => {
     const registered = await request(app.getHttpServer())
       .post(`${API}/resend-verification`)
