@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from 'src/database/prisma/prisma.service';
 import { MailService } from 'src/shared/mail/mail.service';
+import { CacheService } from 'src/shared/cache/cache.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.types';
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly cacheService: CacheService,
   ) {}
 
   async register(dto: RegisterDto, meta?: SessionMetadata) {
@@ -428,8 +430,21 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Per-email rate limit: max 3 reset requests per email per hour.
+    const throttleKey = this.cacheService.buildKey('throttle:pwd-reset', normalizedEmail);
+    const attempts = (await this.cacheService.get<number>(throttleKey)) ?? 0;
+    if (attempts >= 3) {
+      // Still return a generic message to prevent email enumeration.
+      return {
+        message: 'If this email is registered, a password reset link has been sent.',
+      };
+    }
+    await this.cacheService.set(throttleKey, attempts + 1, 60 * 60 * 1000); // 1 hour TTL
+
     const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+      where: { email: normalizedEmail },
     });
 
     // Return a generic message to prevent email enumeration
