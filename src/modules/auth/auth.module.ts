@@ -5,6 +5,7 @@ import { PassportModule } from '@nestjs/passport';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { MailModule } from '../../shared/mail/mail.module';
+import { CacheModule } from '../../shared/cache/cache.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategies';
@@ -42,6 +43,7 @@ import { RolesGuard } from './guards/roles.guard';
       }),
     }),
     MailModule,
+    CacheModule,
   ],
   controllers: [AuthController],
   providers: [
