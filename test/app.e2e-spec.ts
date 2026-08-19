@@ -18,7 +18,7 @@ describe('Auth (e2e)', () => {
   let prisma: PrismaService;
 
   const email = `e2e-${Date.now()}@example.com`;
-  const password = 'password123';
+  const password = 'Password@123';
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -117,7 +117,7 @@ describe('Auth (e2e)', () => {
   });
 
   it('POST /login rejects bad credentials with 401', async () => {
-    await login({ password: 'wrong-password' }).expect(401);
+    await login({ password: 'WrongPass@1' }).expect(401);
   });
 
   it('POST /refresh rotates the refresh cookie; rotated-away tokens are single-use', async () => {
