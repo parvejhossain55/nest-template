@@ -381,9 +381,23 @@ export class AuthService {
    * is replayed (theft indicator) so a stolen token can't outlive its sibling
    * sessions.
    */
-  private async revokeUserSessions(userId: string) {
+  private async revokeUserSessions(
+    userId: string,
+    excludeTokenHash?: string,
+  ) {
+    const where: Prisma.RefreshTokenWhereInput = {
+      userId,
+      revokedAt: null,
+    };
+
+    // When a token hash is provided, exclude it from revocation so the
+    // caller's current session stays alive (e.g. after changePassword).
+    if (excludeTokenHash) {
+      where.tokenHash = { not: excludeTokenHash };
+    }
+
     await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
+      where,
       data: { revokedAt: new Date() },
     });
   }
@@ -491,7 +505,12 @@ export class AuthService {
     return { message: 'Password has been reset successfully' };
   }
 
-  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+  async changePassword(
+    userId: string,
+    oldPassword: string,
+    newPassword: string,
+    currentRefreshToken?: string,
+  ) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.deletedAt) {
       throw new UnauthorizedException('User not found');
@@ -513,10 +532,26 @@ export class AuthService {
       data: { passwordHash: hashedPassword },
     });
 
-    // Revoke all other sessions for security
-    await this.revokeUserSessions(userId);
+    // Revoke all sessions except the current one so the user stays logged in.
+    // A stolen session is still invalidated; only the caller's active session
+    // survives by receiving a fresh refresh token below.
+    const excludeHash = currentRefreshToken
+      ? this.tokenDigest(currentRefreshToken)
+      : undefined;
+    await this.revokeUserSessions(userId, excludeHash);
 
-    return { message: 'Password changed successfully' };
+    // Issue a new refresh token for the current session so the rotated-away
+    // old token can never be replayed.
+    const { expiresAt, accessToken, refreshToken } =
+      await this.generateTokens(user);
+    await this.storeRefreshToken(user.id, refreshToken, expiresAt);
+
+    return {
+      message: 'Password changed successfully',
+      accessToken,
+      refreshToken,
+      expiresAt,
+    };
   }
 
   private sanitizeUser(user: User) {
